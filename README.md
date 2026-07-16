@@ -67,21 +67,11 @@ Play Audio in Browser
 
 ---
 
-### Story Input
 
-![Story Input](images/typing-story.png)
-
----
 
 ### Generated Audio
 
 ![Generated Audio](images/generated-audio.png)
-
----
-
-### AWS Architecture
-
-![Architecture](images/aws-architecture.png)
 
 ---
 
