@@ -1,0 +1,177 @@
+import json
+import boto3
+import uuid
+import base64
+from datetime import datetime
+
+# ================================
+# AWS Clients
+# ================================
+s3 = boto3.client("s3")
+polly = boto3.client("polly")
+dynamodb = boto3.resource("dynamodb")
+
+# ================================
+# Configuration
+# ================================
+BUCKET_NAME = "kids-story-bucket-mihir"     # Change this
+TABLE_NAME = "KidsStories"
+
+table = dynamodb.Table(TABLE_NAME)
+
+
+# ================================
+# Response Helper
+# ================================
+def response(status, body):
+    return {
+        "statusCode": status,
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Allow-Methods": "*"
+        },
+        "body": json.dumps(body)
+    }
+
+
+# ================================
+# Lambda Handler
+# ================================
+def lambda_handler(event, context):
+
+    try:
+
+        # --------------------------------
+        # Handle OPTIONS (CORS)
+        # --------------------------------
+        if event.get("requestContext", {}).get("http", {}).get("method") == "OPTIONS":
+            return response(200, {})
+
+        body = json.loads(event["body"])
+
+        title = body.get("title", "").strip()
+        voice = body.get("voice", "Joanna")
+
+        story_text = ""
+
+        # ==================================================
+        # OPTION 1 : Story pasted in textarea
+        # ==================================================
+        if body.get("text"):
+
+            story_text = body["text"]
+
+        # ==================================================
+        # OPTION 2 : TXT file uploaded
+        # Frontend sends Base64 encoded file
+        # ==================================================
+        elif body.get("file"):
+
+            decoded = base64.b64decode(body["file"])
+            story_text = decoded.decode("utf-8")
+
+        else:
+
+            return response(400, {
+                "message": "No story provided."
+            })
+
+        # ==================================================
+        # Validate
+        # ==================================================
+        if len(story_text.strip()) == 0:
+
+            return response(400, {
+                "message": "Story cannot be empty."
+            })
+
+        # ==================================================
+        # Generate Story ID
+        # ==================================================
+        story_id = str(uuid.uuid4())
+
+        txt_key = f"stories/{story_id}.txt"
+        mp3_key = f"audio/{story_id}.mp3"
+
+        # ==================================================
+        # Upload Story TXT
+        # ==================================================
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=txt_key,
+            Body=story_text.encode("utf-8"),
+            ContentType="text/plain"
+        )
+
+        # ==================================================
+        # Generate Speech using Polly
+        # ==================================================
+        polly_response = polly.synthesize_speech(
+            Text=story_text,
+            OutputFormat="mp3",
+            VoiceId=voice
+        )
+
+        audio_stream = polly_response["AudioStream"].read()
+
+        # ==================================================
+        # Upload MP3
+        # ==================================================
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=mp3_key,
+            Body=audio_stream,
+            ContentType="audio/mpeg"
+        )
+
+        # ==================================================
+        # Generate Audio URL
+        # ==================================================
+        audio_url = f"https://{BUCKET_NAME}.s3.amazonaws.com/{mp3_key}"
+
+        story_url = f"https://{BUCKET_NAME}.s3.amazonaws.com/{txt_key}"
+
+        # ==================================================
+        # Save Metadata
+        # ==================================================
+        table.put_item(
+            Item={
+                "storyId": story_id,
+                "title": title,
+                "voice": voice,
+                "storyFile": txt_key,
+                "storyUrl": story_url,
+                "audioFile": mp3_key,
+                "audioUrl": audio_url,
+                "createdAt": datetime.utcnow().isoformat(),
+                "textLength": len(story_text)
+            }
+        )
+
+        # ==================================================
+        # Success
+        # ==================================================
+        return response(200, {
+
+            "success": True,
+            "storyId": story_id,
+            "title": title,
+            "voice": voice,
+            "storyUrl": story_url,
+            "audioUrl": audio_url,
+            "message": "Story converted successfully."
+
+        })
+
+    except Exception as e:
+
+        print(e)
+
+        return response(500, {
+
+            "success": False,
+            "error": str(e)
+
+        })
